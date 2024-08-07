@@ -26,6 +26,7 @@ app.use((0, express_session_1.default)({
     secret: 'your-secret',
     resave: false,
     saveUninitialized: true,
+    cookie: { secure: false }, // Set secure to true if using HTTPS
 }));
 const oauth2Client = new googleapis_1.google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 // Route to start the OAuth process
@@ -42,6 +43,8 @@ app.get('/auth/google/callback', (req, res) => __awaiter(void 0, void 0, void 0,
     try {
         const { tokens } = yield oauth2Client.getToken(code);
         oauth2Client.setCredentials(tokens);
+        // Log the tokens for debugging
+        console.log('Tokens received:', tokens);
         req.session.tokens = {
             access_token: tokens.access_token || undefined,
             refresh_token: tokens.refresh_token || undefined,
@@ -49,18 +52,36 @@ app.get('/auth/google/callback', (req, res) => __awaiter(void 0, void 0, void 0,
             token_type: tokens.token_type || undefined,
             expiry_date: tokens.expiry_date || undefined,
         };
-        res.send('Google account connected!');
+        // Save the session
+        req.session.save(() => {
+            res.send('Google account connected!');
+        });
     }
     catch (error) {
         console.error('Error retrieving access token', error);
         res.send('Error retrieving access token');
     }
 }));
+// Helper function to extract email details
+const extractEmailDetails = (message) => {
+    const headers = message.payload.headers;
+    const getHeader = (name) => { var _a; return ((_a = headers.find((header) => header.name === name)) === null || _a === void 0 ? void 0 : _a.value) || 'Unknown'; };
+    return {
+        id: message.id,
+        threadId: message.threadId,
+        snippet: message.snippet,
+        from: getHeader('From'),
+        subject: getHeader('Subject'),
+        date: getHeader('Date'),
+    };
+};
 // Route to read emails
 app.get('/read-emails', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     if (!req.session.tokens) {
         return res.status(401).send('Unauthorized');
     }
+    // Log the session tokens for debugging
+    console.log('Session tokens:', req.session.tokens);
     oauth2Client.setCredentials(req.session.tokens);
     const gmail = googleapis_1.google.gmail({ version: 'v1', auth: oauth2Client });
     try {
@@ -70,7 +91,7 @@ app.get('/read-emails', (req, res) => __awaiter(void 0, void 0, void 0, function
             if (!message.id)
                 return null; // Ensure message.id is defined
             const msg = yield gmail.users.messages.get({ userId: 'me', id: message.id });
-            return msg.data;
+            return extractEmailDetails(msg.data);
         })));
         res.json(emailData.filter(email => email !== null)); // Filter out any null values
     }
