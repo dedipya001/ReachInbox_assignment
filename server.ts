@@ -1,17 +1,42 @@
-import { google } from 'googleapis';
 import express from 'express';
 import session from 'express-session';
+import { google } from 'googleapis';
+import { ConfidentialClientApplication, Configuration } from '@azure/msal-node';
+import axios from 'axios';
 import dotenv from 'dotenv';
+
+// Import the session type augmentation
+// import './types'; // Adjust the path if necessary
 
 dotenv.config();
 
 const app = express();
 const port = 3000;
 
-const CLIENT_ID = process.env.GOOGLE_CLIENT_ID as string;
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET as string;
-const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI as string;
+// Google OAuth setup
+const googleClientId = process.env.GOOGLE_CLIENT_ID as string;
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET as string;
+const googleRedirectUri = 'http://localhost:3000/auth/google/callback';
 
+const oauth2Client = new google.auth.OAuth2(googleClientId, googleClientSecret, googleRedirectUri);
+
+// Microsoft OAuth setup
+const tenantId = process.env.TENANT_ID as string;
+const clientId = process.env.CLIENT_ID as string;
+const clientSecret = process.env.CLIENT_SECRET as string;
+const redirectUri = 'http://localhost:3000/auth/callback';
+
+const msalConfig: Configuration = {
+  auth: {
+    clientId,
+    authority: `https://login.microsoftonline.com/${tenantId}`,
+    clientSecret,
+  },
+};
+
+const cca = new ConfidentialClientApplication(msalConfig);
+
+// Middleware for sessions
 app.use(session({
   secret: 'your-secret',
   resave: false,
@@ -19,43 +44,78 @@ app.use(session({
   cookie: { secure: false }, // Set secure to true if using HTTPS
 }));
 
-const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
-
-// Route to start the OAuth process
+// Google OAuth routes
 app.get('/auth/google', (req, res) => {
+  const state = 'google'; // Set the state parameter
+  (req.session as any).state = state; // Use type assertion
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send'],
+    state: state, // Pass the state parameter
   });
   res.redirect(url);
 });
 
-// OAuth callback route
 app.get('/auth/google/callback', async (req, res) => {
-  const { code } = req.query;
+  const { code, state } = req.query;
+  if (state === (req.session as any).state) { // Validate the state parameter
+    try {
+      const { tokens } = await oauth2Client.getToken(code as string);
+      oauth2Client.setCredentials(tokens);
 
-  try {
-    const { tokens } = await oauth2Client.getToken(code as string);
-    oauth2Client.setCredentials(tokens);
+      req.session.googleTokens = {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        scope: tokens.scope,
+        token_type: tokens.token_type,
+        expiry_date: tokens.expiry_date,
+      };
 
-    // Log the tokens for debugging
-    console.log('Tokens received:', tokens);
-
-    req.session.tokens = {
-      access_token: tokens.access_token || undefined,
-      refresh_token: tokens.refresh_token || undefined,
-      scope: tokens.scope || undefined,
-      token_type: tokens.token_type || undefined,
-      expiry_date: tokens.expiry_date || undefined,
-    };
-
-    // Save the session
-    req.session.save(() => {
       res.send('Google account connected!');
-    });
-  } catch (error) {
-    console.error('Error retrieving access token', error);
-    res.send('Error retrieving access token');
+    } catch (error) {
+      console.error('Error retrieving Google access token', error);
+      res.send('Error retrieving Google access token');
+    }
+  } else {
+    res.send('Invalid state parameter');
+  }
+});
+
+// Outlook OAuth routes
+app.get('/auth/outlook', (req, res) => {
+  const state = 'outlook'; // Set the state parameter
+  (req.session as any).state = state; // Use type assertion
+  cca.getAuthCodeUrl({
+    scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Send'],
+    redirectUri,
+    state: state, // Pass the state parameter
+  }).then((url) => {
+    res.redirect(url);
+  }).catch((error) => {
+    console.error('Error generating auth URL', error);
+    res.send('Error generating auth URL');
+  });
+});
+
+app.get('/auth/callback', async (req, res) => {
+  const { code, state } = req.query;
+  if (state === (req.session as any).state) { // Validate the state parameter
+    try {
+      const response = await cca.acquireTokenByCode({
+        code: code as string,
+        scopes: ['https://graph.microsoft.com/.default'],
+        redirectUri,
+      });
+
+      req.session.outlookToken = response?.accessToken;
+
+      res.send('Outlook account connected!');
+    } catch (error) {
+      console.error('Error retrieving Outlook access token', error);
+      res.send('Error retrieving Outlook access token');
+    }
+  } else {
+    res.send('Invalid state parameter');
   }
 });
 
@@ -73,16 +133,13 @@ const extractEmailDetails = (message: any) => {
   };
 };
 
-// Route to read emails
-app.get('/read-emails', async (req, res) => {
-  if (!req.session.tokens) {
+// Route to read Gmail emails
+app.get('/read-emails/google', async (req, res) => {
+  if (!req.session.googleTokens) {
     return res.status(401).send('Unauthorized');
   }
 
-  // Log the session tokens for debugging
-  console.log('Session tokens:', req.session.tokens);
-
-  oauth2Client.setCredentials(req.session.tokens);
+  oauth2Client.setCredentials(req.session.googleTokens);
   const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
   try {
@@ -90,15 +147,36 @@ app.get('/read-emails', async (req, res) => {
     const messages = response.data.messages || [];
     const emailData = await Promise.all(
       messages.map(async (message) => {
-        if (!message.id) return null;  // Ensure message.id is defined
+        if (!message.id) return null;
         const msg = await gmail.users.messages.get({ userId: 'me', id: message.id as string });
         return extractEmailDetails(msg.data);
       })
     );
-    res.json(emailData.filter(email => email !== null));  // Filter out any null values
+    res.json(emailData.filter(email => email !== null));
   } catch (error) {
-    console.error('Error reading emails', error);
-    res.status(500).send('Error reading emails');
+    console.error('Error reading Gmail emails', error);
+    res.status(500).send('Error reading Gmail emails');
+  }
+});
+
+// Route to read Outlook emails
+app.get('/read-emails/outlook', async (req, res) => {
+  const token = req.session.outlookToken;
+
+  if (!token) {
+    return res.status(401).send('Unauthorized');
+  }
+
+  try {
+    const response = await axios.get('https://graph.microsoft.com/v1.0/me/messages', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    res.json(response.data.value);
+  } catch (error) {
+    console.error('Error reading Outlook emails', error);
+    res.status(500).send('Error reading Outlook emails');
   }
 });
 

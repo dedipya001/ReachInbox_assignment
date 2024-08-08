@@ -3,12 +3,13 @@ import session from 'express-session';
 
 declare module 'express-session' {
   interface SessionData {
-    tokens: {
-      access_token?: string | undefined;
-      refresh_token?: string | undefined;
+    googleTokens: {
+      access_token?: string | undefined | null;
+      refresh_token?: string | undefined | null;
       scope?: string | undefined;
-      token_type?: string | undefined;
-      expiry_date?: number | undefined;
+      token_type?: string | undefined  | null;
+      expiry_date?: number | undefined  | null;
     };
+    outlookToken?: string;
   }
 }
