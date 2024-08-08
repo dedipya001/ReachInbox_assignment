@@ -24,7 +24,7 @@ const analyzeEmailContext = (emailContent) => __awaiter(void 0, void 0, void 0, 
     var _a;
     try {
         const response = yield openai.completions.create({
-            model: 'gpt-3.5-turbo', // Change to an available model
+            model: 'gpt-3.5-turbo',
             prompt: emailContent,
             max_tokens: 50,
         });

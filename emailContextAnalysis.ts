@@ -11,7 +11,7 @@ const openai = new OpenAI({
 const analyzeEmailContext = async (emailContent: string) => {
   try {
     const response = await openai.completions.create({
-        model: 'gpt-3.5-turbo', // Change to an available model
+        model: 'gpt-3.5-turbo',
         prompt: emailContent,
       max_tokens: 50,
     });
