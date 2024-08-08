@@ -18,8 +18,7 @@ const googleapis_1 = require("googleapis");
 const msal_node_1 = require("@azure/msal-node");
 const axios_1 = __importDefault(require("axios"));
 const dotenv_1 = __importDefault(require("dotenv"));
-// Import the session type augmentation
-// import './types'; // Adjust the path if necessary
+const emailContextAnalysis_1 = __importDefault(require("./emailContextAnalysis"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const port = 3000;
@@ -146,7 +145,9 @@ app.get('/read-emails/google', (req, res) => __awaiter(void 0, void 0, void 0, f
             if (!message.id)
                 return null;
             const msg = yield gmail.users.messages.get({ userId: 'me', id: message.id });
-            return extractEmailDetails(msg.data);
+            const emailDetails = extractEmailDetails(msg.data);
+            const label = yield (0, emailContextAnalysis_1.default)(emailDetails.snippet);
+            return Object.assign(Object.assign({}, emailDetails), { label });
         })));
         res.json(emailData.filter(email => email !== null));
     }
@@ -163,11 +164,14 @@ app.get('/read-emails/outlook', (req, res) => __awaiter(void 0, void 0, void 0, 
     }
     try {
         const response = yield axios_1.default.get('https://graph.microsoft.com/v1.0/me/messages', {
-            headers: {
-                Authorization: `Bearer ${token}`,
-            },
+            headers: { Authorization: `Bearer ${token}` },
         });
-        res.json(response.data.value);
+        const emails = response.data.value;
+        const emailData = yield Promise.all(emails.map((email) => __awaiter(void 0, void 0, void 0, function* () {
+            const label = yield (0, emailContextAnalysis_1.default)(email.body.content);
+            return Object.assign(Object.assign({}, email), { label });
+        })));
+        res.json(emailData);
     }
     catch (error) {
         console.error('Error reading Outlook emails', error);

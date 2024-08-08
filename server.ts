@@ -5,8 +5,8 @@ import { ConfidentialClientApplication, Configuration } from '@azure/msal-node';
 import axios from 'axios';
 import dotenv from 'dotenv';
 
-// Import the session type augmentation
-// import './types'; // Adjust the path if necessary
+import analyzeEmailContext  from './emailContextAnalysis';
+
 
 dotenv.config();
 
@@ -149,7 +149,9 @@ app.get('/read-emails/google', async (req, res) => {
       messages.map(async (message) => {
         if (!message.id) return null;
         const msg = await gmail.users.messages.get({ userId: 'me', id: message.id as string });
-        return extractEmailDetails(msg.data);
+        const emailDetails = extractEmailDetails(msg.data);
+        const label = await analyzeEmailContext(emailDetails.snippet);
+        return { ...emailDetails, label };
       })
     );
     res.json(emailData.filter(email => email !== null));
@@ -158,6 +160,7 @@ app.get('/read-emails/google', async (req, res) => {
     res.status(500).send('Error reading Gmail emails');
   }
 });
+
 
 // Route to read Outlook emails
 app.get('/read-emails/outlook', async (req, res) => {
@@ -169,11 +172,16 @@ app.get('/read-emails/outlook', async (req, res) => {
 
   try {
     const response = await axios.get('https://graph.microsoft.com/v1.0/me/messages', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { Authorization: `Bearer ${token}` },
     });
-    res.json(response.data.value);
+    const emails = response.data.value;
+    const emailData = await Promise.all(
+      emails.map(async (email: any) => {
+        const label = await analyzeEmailContext(email.body.content);
+        return { ...email, label };
+      })
+    );
+    res.json(emailData);
   } catch (error) {
     console.error('Error reading Outlook emails', error);
     res.status(500).send('Error reading Outlook emails');
